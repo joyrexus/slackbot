@@ -1,84 +1,49 @@
 package slackbot
 
 import (
-	"encoding/json"
-	"fmt"
-	"io/ioutil"
 	"log"
-	"net/http"
 	"sync/atomic"
 
 	"golang.org/x/net/websocket"
 )
 
-// NewSocket initiates a websocket-based RTM API session. It returns 
-// the websocket and the ID of the (bot-)user whom the token belongs to.
-func NewSocket(token string) (*websocket.Conn, string) {
-	wsurl, id, err := start(token)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	ws, err := websocket.Dial(wsurl, "", "https://api.slack.com/")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	return ws, id
-}
-
-// start does a rtm.start, and returns a websocket URL and user ID. The
-// websocket URL can be used to initiate an RTM session.
-func start(token string) (url, id string, err error) {
-	url = fmt.Sprintf("https://slack.com/api/rtm.start?token=%s", token)
-	resp, err := http.Get(url)
-	if err != nil {
-		return "", "", err
-	}
-	if resp.StatusCode != 200 {
-		err = fmt.Errorf("API request failed with code %d", resp.StatusCode)
-		return
-	}
-	body, err := ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		return "", "", err
-	}
-
-	var data struct {
-		Ok    bool
-		Error string
-		Url   string
-		Self  struct {
-			Id string
-		}
-	}
-	if err = json.Unmarshal(body, &data); err != nil {
-		return "", "", err
-	}
-	if !data.Ok {
-		err = fmt.Errorf("Slack error: %s", data.Error)
-		return "", "", err
-	}
-
-	return data.Url, data.Self.Id, nil
-}
+var counter uint64 // atomic counter used to increment message IDs
 
 type Message struct {
 	Id      uint64 `json:"id"`
 	Type    string `json:"type"`
+	Subtype string `json:"subtype"`
 	Channel string `json:"channel"`
+	User    string `json:"user"`
 	Text    string `json:"text"`
 }
 
-func read(ws *websocket.Conn) (m Message, err error) {
-	err = websocket.JSON.Receive(ws, &m)
-	return m, err
+type Bot struct {
+	id string
+	ws *websocket.Conn
 }
 
-var counter uint64
+// New initializes a new bot session, returning a *Bot.
+func New(token string) *Bot {
+	url, id, err := startRTM(token)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-func post(ws *websocket.Conn, m Message) error {
-	m.Id = atomic.AddUint64(&counter, 1)
-	return websocket.JSON.Send(ws, m)
+	ws, err := websocket.Dial(url, "", "https://api.slack.com/")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return &Bot{id, ws}
+}
+
+func (bot *Bot) Read() (msg Message, err error) {
+	err = websocket.JSON.Receive(bot.ws, &msg)
+	return msg, err
+}
+
+func (bot *Bot) Post(msg Message) error {
+	msg.Id = atomic.AddUint64(&counter, 1)
+	return websocket.JSON.Send(bot.ws, msg)
 }
